@@ -9,3 +9,5 @@
 
 cargo-test-*
 tarpaulin-report.html
+
+docs/aster/

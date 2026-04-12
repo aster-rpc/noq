@@ -2,7 +2,7 @@
 
 This fork tracks [upstream noq](https://github.com/n0-computer/noq) and contributes security and performance fixes back. Performance work draws on ideas from high-performance networking systems such as [Aeron](https://github.com/real-logic/aeron). Security work applies standard practices: unsafe code audit, input validation review, fuzzing gap analysis, and denial-of-service surface reduction.
 
-See [PERF_ROADMAP.md](PERF_ROADMAP.md) and [SEC_ROADMAP.md](SEC_ROADMAP.md) for detailed findings and next steps.
+A key goal of this fork is improving the FFI story for language bindings (.NET, Go, Java). This includes zero-copy read paths into caller-provided buffers, a poll-based connection driver that doesn't require a Rust async runtime, and C-compatible event types — all aimed at reducing overhead when noq is embedded in a foreign language runtime.
 
 ## Contributions
 
