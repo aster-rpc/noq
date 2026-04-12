@@ -334,6 +334,63 @@ impl<'a> Chunks<'a> {
         }
     }
 
+    /// Read directly into a caller-provided buffer
+    ///
+    /// Copies available stream data into `buf` without creating intermediate `Bytes` handles.
+    /// Returns the number of bytes written on success, or `0` if the stream is finished (EOF).
+    ///
+    /// This is more efficient than [`Self::next`] when the caller will immediately copy the
+    /// data anyway (e.g. into an FFI ring buffer), because it avoids `Bytes` split and
+    /// reference-count overhead.
+    ///
+    /// Should call [`Self::finalize`] when done reading.
+    pub fn read_into(&mut self, buf: &mut [u8]) -> Result<usize, ReadError> {
+        let rs = match self.state {
+            ChunksState::Readable(ref mut rs) => rs,
+            ChunksState::Reset(error_code) => {
+                return Err(ReadError::Reset(error_code));
+            }
+            ChunksState::Finished => {
+                return Ok(0);
+            }
+            ChunksState::Finalized => panic!("must not call read_into() after finalize()"),
+        };
+
+        let n = rs.assembler.read_into(buf, self.ordered);
+        self.read += n as u64;
+
+        if n > 0 {
+            return Ok(n);
+        }
+
+        // No data read — check stream state (mirrors `next()` logic)
+        match rs.state {
+            RecvState::ResetRecvd { error_code, .. } => {
+                debug_assert_eq!(self.read, 0, "reset streams have empty buffers");
+                let state = mem::replace(&mut self.state, ChunksState::Reset(error_code));
+                let recv = match state {
+                    ChunksState::Readable(recv) => StreamRecv::Open(recv),
+                    _ => unreachable!("state must be ChunkState::Readable"),
+                };
+                self.streams.stream_recv_freed(self.id, recv);
+                Err(ReadError::Reset(error_code))
+            }
+            RecvState::Recv { size } => {
+                if size == Some(rs.end) && rs.assembler.bytes_read() == rs.end {
+                    let state = mem::replace(&mut self.state, ChunksState::Finished);
+                    let recv = match state {
+                        ChunksState::Readable(recv) => StreamRecv::Open(recv),
+                        _ => unreachable!("state must be ChunkState::Readable"),
+                    };
+                    self.streams.stream_recv_freed(self.id, recv);
+                    Ok(0)
+                } else {
+                    Err(ReadError::Blocked)
+                }
+            }
+        }
+    }
+
     /// Mark the read data as consumed from the stream.
     ///
     /// The number of read bytes will be released from the congestion window,
