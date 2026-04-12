@@ -219,9 +219,8 @@ impl Assembler {
     pub(super) fn read_into(&mut self, buf: &mut [u8], ordered: bool) -> usize {
         let mut written = 0;
         while written < buf.len() {
-            let mut chunk = match self.data.peek_mut() {
-                Some(c) => c,
-                None => break,
+            let Some(mut chunk) = self.data.peek_mut() else {
+                break;
             };
 
             if ordered {
@@ -981,20 +980,15 @@ mod proptests {
                         // Verify data correctness and mark as returned
                         // For ordered reads, bytes_read tracks where we are
                         let start_offset = asm.bytes_read() - n as u64;
-                        for i in 0..n {
+                        for (i, &byte) in buf[..n].iter().enumerate() {
                             let off = start_offset as usize + i;
-                            prop_assert_eq!(
-                                buf[i], data[off],
-                                "data corruption at offset {}", off
-                            );
+                            prop_assert_eq!(byte, data[off], "data corruption at offset {}", off);
                             prop_assert!(
                                 reference.received[off],
-                                "returned unreceived byte at {}", off
+                                "returned unreceived byte at {}",
+                                off
                             );
-                            prop_assert!(
-                                !reference.returned[off],
-                                "duplicate byte at {}", off
-                            );
+                            prop_assert!(!reference.returned[off], "duplicate byte at {}", off);
                             reference.returned[off] = true;
                         }
                     }
