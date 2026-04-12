@@ -1,3 +1,30 @@
+# noq (aster-rpc fork)
+
+This fork tracks [upstream noq](https://github.com/n0-computer/noq) and contributes security and performance fixes back. Performance work draws on ideas from high-performance networking systems such as [Aeron](https://github.com/real-logic/aeron). Security work applies standard practices: unsafe code audit, input validation review, fuzzing gap analysis, and denial-of-service surface reduction.
+
+See [PERF_ROADMAP.md](PERF_ROADMAP.md) and [SEC_ROADMAP.md](SEC_ROADMAP.md) for detailed findings and next steps.
+
+## Contributions
+
+| PR | Area | Summary | Upstream |
+|----|------|---------|----------|
+| [#584](https://github.com/n0-computer/noq/pull/584) | Security | Fix two pre-authentication denial-of-service vectors: a malformed ACK frame could hang a connection indefinitely, and crafted ACK data could crash the process | Pending |
+| [#583](https://github.com/n0-computer/noq/pull/583) | Performance | Stop copying every received packet into a new buffer — halves the number of memory allocations on the receive path | Pending |
+| [#582](https://github.com/n0-computer/noq/pull/582) | Tooling | Add opt-in heap profiling so allocation hotspots can be measured and optimizations can be proven with data | Pending |
+| [#581](https://github.com/n0-computer/noq/pull/581) | Performance | Reuse a temporary buffer instead of allocating a new one for every incoming packet | Pending |
+
+Additional fixes on this fork (not yet submitted upstream):
+
+| Branch | Area | Summary |
+|--------|------|---------|
+| `fix/ack-delay-shift-overflow` | Security | Fix silent integer overflow when computing round-trip time from peer-supplied ACK data — could corrupt congestion control |
+
+---
+
+*Below is the original upstream README.*
+
+---
+
 # noq
 
 [![Documentation](https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square)](https://docs.rs/noq/)
