@@ -156,6 +156,41 @@ impl RecvStream {
         .map(|res| res.map(|_| ()))
     }
 
+    /// Read directly into a caller-provided buffer without intermediate `Bytes` allocation
+    ///
+    /// Yields the number of bytes written into `buf` on success, or `None` if the stream was
+    /// finished. This is more efficient than [`Self::read`] for FFI paths where data will be
+    /// copied into a caller-owned buffer (e.g. a ring buffer shared across a language boundary),
+    /// because it bypasses `Bytes` handle creation and reference counting inside the assembler.
+    ///
+    /// This operation is cancel-safe.
+    pub async fn read_into(&mut self, buf: &mut [u8]) -> Result<Option<usize>, ReadError> {
+        ReadInto { stream: self, buf }.await
+    }
+
+    /// Attempts to read from the stream directly into the provided buffer
+    ///
+    /// Like [`Self::poll_read`] but bypasses `Bytes` handle creation internally.
+    /// On success, returns `Poll::Ready(Ok(n))` where `n` is the number of bytes written.
+    /// Returns `0` to indicate the stream is finished.
+    pub fn poll_read_into(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<Option<usize>, ReadError>> {
+        if buf.is_empty() {
+            return Poll::Ready(Ok(Some(0)));
+        }
+
+        self.poll_read_generic(cx, true, |chunks| {
+            match chunks.read_into(buf) {
+                Ok(0) => ReadStatus::Finished(None),
+                Ok(n) => ReadStatus::Readable(n),
+                Err(e) => ReadStatus::Failed(None, e),
+            }
+        })
+    }
+
     /// Reads the next segment of data as zero-copy [`Bytes`].
     ///
     /// Yields `None` if the stream was finished. Otherwise, yields the next segment of data. The
@@ -751,6 +786,23 @@ pub enum ReadExactError {
     /// A read error occurred
     #[error(transparent)]
     ReadError(#[from] ReadError),
+}
+
+/// Future produced by [`RecvStream::read_into()`].
+///
+/// [`RecvStream::read_into()`]: crate::RecvStream::read_into
+struct ReadInto<'a> {
+    stream: &'a mut RecvStream,
+    buf: &'a mut [u8],
+}
+
+impl Future for ReadInto<'_> {
+    type Output = Result<Option<usize>, ReadError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        this.stream.poll_read_into(cx, this.buf)
+    }
 }
 
 /// Future produced by [`RecvStream::read_chunk()`] or [`UnorderedRecvStream::read_chunk()`].
