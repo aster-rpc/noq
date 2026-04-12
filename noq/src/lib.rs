@@ -48,6 +48,7 @@ mod event_stream;
 mod incoming;
 mod mutex;
 mod path;
+pub mod poll_driver;
 mod recv_stream;
 mod runtime;
 mod send_stream;
