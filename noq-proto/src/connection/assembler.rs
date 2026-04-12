@@ -210,6 +210,60 @@ impl Assembler {
         }
     }
 
+    /// Read directly into a caller-provided buffer without creating intermediate `Bytes` handles
+    ///
+    /// Copies data from the assembler's internal buffers into `buf`, advancing the read position.
+    /// Returns the number of bytes written to `buf`. This avoids the `Bytes` split/clone overhead
+    /// of [`Self::read`], making it suitable for FFI paths where data is copied into a
+    /// caller-owned buffer (e.g. a ring buffer shared with Go/Java).
+    pub(super) fn read_into(&mut self, buf: &mut [u8], ordered: bool) -> usize {
+        let mut written = 0;
+        while written < buf.len() {
+            let mut chunk = match self.data.peek_mut() {
+                Some(c) => c,
+                None => break,
+            };
+
+            if ordered {
+                if chunk.offset > self.bytes_read {
+                    // Gap — next chunk isn't contiguous yet
+                    break;
+                } else if (chunk.offset + chunk.bytes.len() as u64) <= self.bytes_read {
+                    // Already consumed
+                    self.buffered -= chunk.bytes.len();
+                    self.allocated -= chunk.allocation_size;
+                    PeekMut::pop(chunk);
+                    continue;
+                }
+
+                let start = (self.bytes_read - chunk.offset) as usize;
+                if start > 0 {
+                    chunk.bytes.advance(start);
+                    chunk.offset += start as u64;
+                    self.buffered -= start;
+                }
+            }
+
+            let available = chunk.bytes.len();
+            let to_copy = (buf.len() - written).min(available);
+            buf[written..written + to_copy].copy_from_slice(&chunk.bytes[..to_copy]);
+            written += to_copy;
+            self.bytes_read += to_copy as u64;
+            self.buffered -= to_copy;
+
+            if to_copy < available {
+                // Partially consumed
+                chunk.bytes.advance(to_copy);
+                chunk.offset += to_copy as u64;
+            } else {
+                // Fully consumed
+                self.allocated -= chunk.allocation_size;
+                PeekMut::pop(chunk);
+            }
+        }
+        written
+    }
+
     /// Number of bytes consumed by the application
     pub(super) fn bytes_read(&self) -> u64 {
         self.bytes_read
@@ -664,6 +718,71 @@ mod test {
         assert_eq!(x.read(1, false), None); // should be None, byte 0 already returned
     }
 
+    #[test]
+    fn read_into_ordered() {
+        let mut x = Assembler::new();
+        let mut buf = [0u8; 32];
+
+        // Empty assembler
+        assert_eq!(x.read_into(&mut buf, true), 0);
+
+        // Insert and read in parts
+        x.insert(0, Bytes::from_static(b"123456"), 6);
+        assert_eq!(x.read_into(&mut buf[..3], true), 3);
+        assert_eq!(&buf[..3], b"123");
+        assert_eq!(x.read_into(&mut buf[..10], true), 3);
+        assert_eq!(&buf[..3], b"456");
+
+        // Gap — should stop at gap
+        x.insert(9, Bytes::from_static(b"jkl"), 3);
+        assert_eq!(x.read_into(&mut buf, true), 0);
+        // Fill the gap
+        x.insert(6, Bytes::from_static(b"ghi"), 3);
+        assert_eq!(x.read_into(&mut buf, true), 6);
+        assert_eq!(&buf[..6], b"ghijkl");
+
+        // Nothing left
+        assert_eq!(x.read_into(&mut buf, true), 0);
+    }
+
+    #[test]
+    fn read_into_spans_multiple_chunks() {
+        let mut x = Assembler::new();
+        x.insert(0, Bytes::from_static(b"abc"), 3);
+        x.insert(3, Bytes::from_static(b"def"), 3);
+        x.insert(6, Bytes::from_static(b"ghi"), 3);
+
+        let mut buf = [0u8; 9];
+        assert_eq!(x.read_into(&mut buf, true), 9);
+        assert_eq!(&buf, b"abcdefghi");
+    }
+
+    #[test]
+    fn read_into_matches_read() {
+        // Verify read_into produces the same bytes as read() for the same input
+        let mut a = Assembler::new();
+        let mut b = Assembler::new();
+        let data: &[&[u8]] = &[b"hello", b" ", b"world"];
+        let mut offset = 0u64;
+        for chunk in data {
+            a.insert(offset, Bytes::from_static(chunk), chunk.len());
+            b.insert(offset, Bytes::from_static(chunk), chunk.len());
+            offset += chunk.len() as u64;
+        }
+
+        // Read via Chunk path
+        let mut via_read = Vec::new();
+        while let Some(chunk) = a.read(usize::MAX, true) {
+            via_read.extend_from_slice(&chunk.bytes);
+        }
+
+        // Read via read_into path
+        let mut via_read_into = vec![0u8; 32];
+        let n = b.read_into(&mut via_read_into, true);
+
+        assert_eq!(&via_read_into[..n], &via_read[..]);
+    }
+
     fn next_unordered(x: &mut Assembler) -> Chunk {
         x.read(usize::MAX, false).unwrap()
     }
@@ -695,6 +814,11 @@ mod proptests {
         },
         #[weight(10)]
         Read {
+            #[strategy(1..MAX_LEN)]
+            max_len: usize,
+        },
+        #[weight(10)]
+        ReadInto {
             #[strategy(1..MAX_LEN)]
             max_len: usize,
         },
@@ -820,6 +944,58 @@ mod proptests {
                                 );
                                 reference.returned[offset] = true;
                             }
+                        }
+                    }
+                }
+                Op::ReadInto { max_len } => {
+                    // read_into is designed for ordered reads (the async API always
+                    // passes ordered=true). In unordered mode, the caller can't know
+                    // the source offset, so we skip.
+                    if !reference.ordered {
+                        continue;
+                    }
+                    let ordered = true;
+                    let mut buf = vec![0u8; max_len];
+                    let n = asm.read_into(&mut buf, ordered);
+
+                    if n == 0 {
+                        let has_available = if ordered {
+                            reference
+                                .returned
+                                .iter()
+                                .position(|&x| !x)
+                                .is_some_and(|pos| reference.received[pos])
+                        } else {
+                            reference
+                                .received
+                                .iter()
+                                .zip(&reference.returned)
+                                .any(|(&r, &ret)| r && !ret)
+                        };
+                        prop_assert!(
+                            !has_available,
+                            "read_into returned 0 but data was available"
+                        );
+                    } else {
+                        prop_assert!(n <= max_len, "read_into exceeded buffer size");
+                        // Verify data correctness and mark as returned
+                        // For ordered reads, bytes_read tracks where we are
+                        let start_offset = asm.bytes_read() - n as u64;
+                        for i in 0..n {
+                            let off = start_offset as usize + i;
+                            prop_assert_eq!(
+                                buf[i], data[off],
+                                "data corruption at offset {}", off
+                            );
+                            prop_assert!(
+                                reference.received[off],
+                                "returned unreceived byte at {}", off
+                            );
+                            prop_assert!(
+                                !reference.returned[off],
+                                "duplicate byte at {}", off
+                            );
+                            reference.returned[off] = true;
                         }
                     }
                 }
