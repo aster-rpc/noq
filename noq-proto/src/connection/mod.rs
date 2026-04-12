@@ -2914,9 +2914,18 @@ impl Connection {
             let ack_delay = if space != SpaceId::Data {
                 Duration::from_micros(0)
             } else {
+                // `ack.delay` is a peer-supplied VarInt (up to 2^62 - 1) and
+                // `ack_delay_exponent` is validated to be <= 20. A naive left shift can
+                // silently wrap, corrupting the RTT estimate. Use checked_shl and saturate
+                // to u64::MAX on overflow — the result is then clamped by peer_max_ack_delay
+                // via cmp::min below.
+                let shifted_micros = ack
+                    .delay
+                    .checked_shl(self.peer_params.ack_delay_exponent.0 as u32)
+                    .unwrap_or(u64::MAX);
                 cmp::min(
                     self.ack_frequency.peer_max_ack_delay,
-                    Duration::from_micros(ack.delay << self.peer_params.ack_delay_exponent.0),
+                    Duration::from_micros(shifted_micros),
                 )
             };
             let rtt = now.saturating_duration_since(
