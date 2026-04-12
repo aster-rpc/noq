@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 33f641825a9dd8892d510a7af942b83a10eec6041d69d7785e8d4ff74ffcf901 # shrinks to input = _AssemblerMatchesReferenceArgs { ops: [Insert { offset: 1, len: 1 }, EnsureOrdering { ordered: false }, ReadInto { max_len: 1 }] }

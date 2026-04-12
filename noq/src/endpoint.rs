@@ -885,10 +885,7 @@ impl RecvState {
             // borrowable again for the processing loop below.
             let poll_result = {
                 let mut iovs: [IoSliceMut<'_>; BATCH_SIZE] = {
-                    let mut bufs = self
-                        .recv_bufs
-                        .iter_mut()
-                        .map(|b| IoSliceMut::new(&mut **b));
+                    let mut bufs = self.recv_bufs.iter_mut().map(|b| IoSliceMut::new(b));
                     std::array::from_fn(|_| bufs.next().expect("BATCH_SIZE elements"))
                 };
                 socket.poll_recv(cx, &mut iovs, &mut metas)
@@ -897,13 +894,11 @@ impl RecvState {
             match poll_result {
                 Poll::Ready(Ok(msgs)) => {
                     self.recv_limiter.record_work(msgs);
-                    for i in 0..msgs {
-                        let meta = &metas[i];
+                    for (i, meta) in metas[..msgs].iter().enumerate() {
                         // Truncate to the actual received length and take ownership.
                         // The proto layer gets the BytesMut directly — no copy.
                         self.recv_bufs[i].truncate(meta.len);
-                        let mut data =
-                            mem::replace(&mut self.recv_bufs[i], BytesMut::new());
+                        let mut data = mem::replace(&mut self.recv_bufs[i], BytesMut::new());
                         while !data.is_empty() {
                             let stride = meta.stride.min(data.len());
                             let buf = if stride == data.len() {
