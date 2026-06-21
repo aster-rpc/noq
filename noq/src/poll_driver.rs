@@ -310,10 +310,7 @@ impl PollDriver {
             .accept(incoming, now, &mut self.response_buf, server_config)
         {
             Ok((handle, conn)) => {
-                self.connections.insert(
-                    handle,
-                    ConnectionState { conn },
-                );
+                self.connections.insert(handle, ConnectionState { conn });
                 Ok(handle)
             }
             Err(error) => {
@@ -367,7 +364,9 @@ impl PollDriver {
         &mut self,
         connection: ConnectionHandle,
     ) -> Option<proto::ConnectionStats> {
-        self.connections.get_mut(&connection).map(|s| s.conn.stats())
+        self.connections
+            .get_mut(&connection)
+            .map(|s| s.conn.stats())
     }
 
     // --- internal ---
@@ -458,9 +457,7 @@ impl PollDriver {
             while let Some(event) = state.conn.poll() {
                 match event {
                     proto::Event::Connected => {
-                        events.push(PollEvent::Connected {
-                            connection: handle,
-                        });
+                        events.push(PollEvent::Connected { connection: handle });
                     }
                     proto::Event::Stream(proto::StreamEvent::Readable { id }) => {
                         events.push(PollEvent::StreamReadable {
@@ -487,9 +484,7 @@ impl PollDriver {
                         });
                     }
                     proto::Event::DatagramReceived => {
-                        events.push(PollEvent::DatagramReceived {
-                            connection: handle,
-                        });
+                        events.push(PollEvent::DatagramReceived { connection: handle });
                     }
                     _ => {
                         trace!("unhandled proto event: {event:?}");
@@ -529,8 +524,6 @@ impl PollDriver {
 
     fn send_transmit(&self, transmit: &Transmit, buf: &[u8]) -> Result<(), io::Error> {
         let data = &buf[..transmit.size];
-        self.socket
-            .send_to(data, transmit.destination)
-            .map(|_| ())
+        self.socket.send_to(data, transmit.destination).map(|_| ())
     }
 }

@@ -182,12 +182,10 @@ impl RecvStream {
             return Poll::Ready(Ok(Some(0)));
         }
 
-        self.poll_read_generic(cx, true, |chunks| {
-            match chunks.read_into(buf) {
-                Ok(0) => ReadStatus::Finished(None),
-                Ok(n) => ReadStatus::Readable(n),
-                Err(e) => ReadStatus::Failed(None, e),
-            }
+        self.poll_read_generic(cx, true, |chunks| match chunks.read_into(buf) {
+            Ok(0) => ReadStatus::Finished(None),
+            Ok(n) => ReadStatus::Readable(n),
+            Err(e) => ReadStatus::Failed(None, e),
         })
     }
 
