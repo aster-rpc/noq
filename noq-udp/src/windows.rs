@@ -50,6 +50,19 @@ impl UdpSocketState {
         );
 
         socket.0.set_nonblocking(true)?;
+
+        // Stop ICMP "port unreachable" from wedging recv() in a WSAECONNRESET
+        // busy-loop. See [`disable_conn_reset`] for the full rationale.
+        if let Err(e) = disable_conn_reset(&*socket.0) {
+            if is_unsupported_error(&e) {
+                crate::log::warn!(
+                    "SIO_UDP_CONNRESET not supported; recv() may surface WSAECONNRESET (os error 10054)"
+                );
+            } else {
+                return Err(e);
+            }
+        }
+
         let addr = socket.0.local_addr()?;
         let is_ipv6 = addr.as_socket_ipv6().is_some();
         let is_ipv4 = if is_ipv6 {
@@ -415,6 +428,42 @@ fn is_unsupported_error(e: &io::Error) -> bool {
         e.raw_os_error(),
         Some(WinSock::WSAEOPNOTSUPP | WinSock::WSAENOPROTOOPT)
     ) || e.kind() == io::ErrorKind::Unsupported
+}
+
+/// Disable Windows' `SIO_UDP_CONNRESET` behaviour on a UDP socket.
+///
+/// By default a Windows UDP socket that elicits an ICMP "port unreachable"
+/// (for example when a datagram is sent to a peer whose port has since closed)
+/// will fail the *next* `recv` with `WSAECONNRESET` (os error 10054). Because
+/// higher layers re-issue the recv and log on every poll, this manifests as a
+/// busy-loop that burns a full CPU core and floods logs while a peer or
+/// hole-punch candidate is unreachable (see the 2026-07-01 Aster busy-loop
+/// report). Unix simply does not surface ICMP unreachable on an unconnected
+/// UDP socket, which is why this only bites on Windows.
+///
+/// Setting the ioctl to `FALSE` makes the socket ignore these ICMP errors on
+/// recv, matching Unix semantics. QUIC performs its own path-MTU and loss
+/// detection, so nothing in the stack depends on the error being surfaced here.
+fn disable_conn_reset(socket: &impl AsRawSocket) -> io::Result<()> {
+    let disable: c_int = 0; // FALSE
+    let mut bytes_returned: u32 = 0;
+    let rc = unsafe {
+        WinSock::WSAIoctl(
+            socket.as_raw_socket() as usize,
+            WinSock::SIO_UDP_CONNRESET,
+            &disable as *const _ as *const _,
+            mem::size_of_val(&disable) as u32,
+            ptr::null_mut(),
+            0,
+            &mut bytes_returned,
+            ptr::null_mut(),
+            None,
+        )
+    };
+    match rc == 0 {
+        true => Ok(()),
+        false => Err(io::Error::last_os_error()),
+    }
 }
 
 fn send(state: &UdpSocketState, socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
