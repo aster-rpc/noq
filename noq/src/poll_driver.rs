@@ -60,7 +60,7 @@ use tracing::{debug, trace, warn};
 const RECV_BATCH_SIZE: usize = 64;
 
 /// Maximum outgoing datagrams per connection per `flush_transmits()` call.
-const SEND_BATCH_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(64) };
+const SEND_BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 
 /// A synchronous, poll-based driver for a noq endpoint and its connections.
 ///
@@ -80,6 +80,9 @@ struct ConnectionState {
 }
 
 /// Events produced by [`PollDriver::drive`].
+// `NewConnection` carries `proto::Incoming` by value; boxing it would push the
+// size cost onto every accept for no gain given how few events are in flight.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum PollEvent {
     /// A new incoming connection attempt. Call [`PollDriver::accept`] or drop it.
@@ -383,9 +386,8 @@ impl PollDriver {
                 }
             };
 
-            let local_addr = match self.socket.local_addr() {
-                Ok(addr) => addr,
-                Err(_) => continue,
+            let Ok(local_addr) = self.socket.local_addr() else {
+                continue;
             };
 
             let data = self.recv_buf.split_to(len);
@@ -437,10 +439,10 @@ impl PollDriver {
 
         for (handle, event) in events_to_route {
             let is_drained = event.is_drained();
-            if let Some(conn_event) = self.endpoint.handle_event(handle, event) {
-                if let Some(state) = self.connections.get_mut(&handle) {
-                    state.conn.handle_event(conn_event);
-                }
+            if let Some(conn_event) = self.endpoint.handle_event(handle, event)
+                && let Some(state) = self.connections.get_mut(&handle)
+            {
+                state.conn.handle_event(conn_event);
             }
             if is_drained {
                 self.connections.remove(&handle);
@@ -500,9 +502,8 @@ impl PollDriver {
         now: Instant,
     ) -> Result<usize, io::Error> {
         let mut sent = 0;
-        let state = match self.connections.get_mut(&handle) {
-            Some(s) => s,
-            None => return Ok(0),
+        let Some(state) = self.connections.get_mut(&handle) else {
+            return Ok(0);
         };
         while let Some(transmit) =
             state
