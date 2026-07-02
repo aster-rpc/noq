@@ -983,18 +983,13 @@ mod proptests {
                         let start_offset = asm.bytes_read() - n as u64;
                         for i in 0..n {
                             let off = start_offset as usize + i;
-                            prop_assert_eq!(
-                                buf[i], data[off],
-                                "data corruption at offset {}", off
-                            );
+                            prop_assert_eq!(buf[i], data[off], "data corruption at offset {}", off);
                             prop_assert!(
                                 reference.received[off],
-                                "returned unreceived byte at {}", off
+                                "returned unreceived byte at {}",
+                                off
                             );
-                            prop_assert!(
-                                !reference.returned[off],
-                                "duplicate byte at {}", off
-                            );
+                            prop_assert!(!reference.returned[off], "duplicate byte at {}", off);
                             reference.returned[off] = true;
                         }
                     }
